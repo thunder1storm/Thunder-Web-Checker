@@ -5,7 +5,6 @@ import requests
 import socket
 import ssl
 import sys
-import json
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
@@ -16,15 +15,10 @@ BANNER = r"""
    ▒ ▓██░ ▒▒██▀▀██▓██  ▒██▓██  ▀█ ██░██   █▒███  ▓██ ░▄█ ▒   ▒█░ █ ░█▒███  ▒██▒ ▄██   ▒▓█    ▄▒██▀▀██▒███  ▒▓█    ▄▓███▄░▒███  ▓██ ░▄█ ▒
    ░ ▓██▓ ░░▓█ ░██▓▓█  ░██▓██▒  ▐▌██░▓█▄   ▒▓█  ▄▒██▀▀█▄     ░█░ █ ░█▒▓█  ▄▒██░█▀     ▒▓▓▄ ▄██░▓█ ░██▒▓█  ▄▒▓▓▄ ▄██▓██ █▄▒▓█  ▄▒██▀▀█▄  
      ▒██▒ ░░▓█▒░██▒▒█████▓▒██░   ▓██░▒████▓░▒████░██▓ ▒██▒   ░░██▒██▓░▒████░▓█  ▀█▓   ▒ ▓███▀ ░▓█▒░██░▒████▒ ▓███▀ ▒██▒ █░▒████░██▓ ▒██▒
-     ▒ ░░   ▒ ░░▒░░▒▓▒ ▒ ▒░ ▒░   ▒ ▒ ▒▒▓  ▒░░ ▒░ ░ ▒▓ ░▒▓░   ░ ▓░▒ ▒ ░░ ▒░ ░▒▓███▀▒   ░ ░▒ ▒  ░▒ ░░▒░░░ ▒░ ░ ░▒ ▒  ▒ ▒▒ ▓░░ ▒░ ░ ▒▓ ░▒▓░
-       ░    ▒ ░▒░ ░░▒░ ░ ░░ ░░   ░ ▒░░ ▒  ▒ ░ ░  ░ ░▒ ░ ▒░     ▒ ░ ░  ░ ░  ▒░▒   ░      ░  ▒   ▒ ░▒░ ░░ ░  ░ ░  ▒  ░ ░▒ ▒░░ ░  ░ ░▒ ░ ▒░
-     ░      ░  ░░ ░░░░ ░ ░   ░   ░ ░ ░ ░  ░   ░    ░░   ░      ░   ░    ░   ░    ░    ░        ░  ░░ ░  ░  ░       ░ ░░ ░   ░    ░░   ░ 
-            ░  ░  ░  ░             ░   ░      ░  ░  ░            ░      ░  ░░         ░ ░      ░  ░  ░  ░  ░ ░     ░  ░     ░  ░  ░     
-                                     ░                                           ░    ░                    ░                            
 """
 
 headers = {
-    'User-Agent': 'Mozilla/5.0 (WebSecurityScanner/1.0 KaliGPT)'
+    'User-Agent': 'Mozilla/5.0 (WebSecurityScanner/1.0 ThunderWebChecker)'
 }
 
 def get_ip(target):
@@ -60,7 +54,9 @@ def check_csrf_forms(target):
         no_csrf = []
         for form in forms:
             if not form.find('input', {'type': 'hidden', 'name': re.compile('csrf', re.I)}):
-                no_csrf.append(str(form))
+                signature = str(form)[:100]  # Shortened for cleaner output
+                if signature not in no_csrf:
+                    no_csrf.append(signature)
         return no_csrf
     except:
         return []
@@ -69,7 +65,13 @@ def check_tech_and_versions(target):
     try:
         ww_out = subprocess.check_output(["whatweb", target], stderr=subprocess.DEVNULL).decode()
         matches = re.findall(r'([a-zA-Z0-9\-]+)\[(.*?)\]', ww_out)
-        tech_versions = {name: version for name, version in matches}
+        tech_versions = {}
+        for name, version in matches:
+            name = name.strip()
+            version = version.strip()
+            if name not in tech_versions:
+                tech_versions[name] = set()
+            tech_versions[name].add(version)
         return tech_versions
     except:
         return {}
@@ -86,46 +88,57 @@ def check_ip_loading(target):
 
 def run_sslscan(target):
     try:
-        output = subprocess.check_output(["sslscan", urlparse(target).hostname], stderr=subprocess.DEVNULL).decode()
-        return output
+        return subprocess.check_output(["sslscan", urlparse(target).hostname], stderr=subprocess.DEVNULL).decode()
     except:
         return "sslscan failed or not installed"
 
 def run_testssl(target):
     try:
-        output = subprocess.check_output(["testssl.sh", "--quiet", target], stderr=subprocess.DEVNULL).decode()
-        return output
+        return subprocess.check_output(["testssl.sh", "--quiet", target], stderr=subprocess.DEVNULL).decode()
     except:
         return "testssl.sh failed or not installed"
 
+def run_nmap_ports(target):
+    try:
+        hostname = urlparse(target).hostname
+        nmap_cmd = ["nmap", "-Pn", "-T4", "-F", hostname]
+        output = subprocess.check_output(nmap_cmd, stderr=subprocess.DEVNULL).decode()
+        return output
+    except:
+        return "Nmap scan failed or not installed"
+
 def scan(target):
     print(BANNER)
-    print(f"[+] Thunder Web Checker scanning {target}\n")
+    print(f"\n[+] Thunder Web Checker scanning: {target}\n")
 
-    print("[*] SSL Certificate Expiry Date:")
-    print(check_ssl_expiry(target), "\n")
+    print("🔒 SSL Certificate Expiry Date:")
+    print("   ", check_ssl_expiry(target), "\n")
 
-    print("[*] Running sslscan:")
+    print("🧪 Running sslscan:")
     print(run_sslscan(target), "\n")
 
-    print("[*] Running testssl.sh:")
+    print("🧪 Running testssl.sh:")
     print(run_testssl(target), "\n")
 
-    print("[*] X-Frame-Options header present:")
-    print(check_x_frame(target), "\n")
+    print("🛡️  X-Frame-Options header present:")
+    print("   ", check_x_frame(target), "\n")
 
-    print("[*] Forms without CSRF protection:")
+    print("🔐 Forms without CSRF protection:")
     forms = check_csrf_forms(target)
-    print(f"Found {len(forms)} forms without CSRF tokens.\n")
+    print(f"   Found {len(forms)} potential forms missing CSRF tokens.\n")
 
-    print("[*] Web Technologies and Versions:")
+    print("🔍 Web Technologies and Versions:")
     techs = check_tech_and_versions(target)
-    for k, v in techs.items():
-        print(f"  {k}: {v}")
+    for k, v_set in techs.items():
+        versions = ", ".join(sorted(v_set))
+        print(f"   {k}: {versions}")
     print()
 
-    print("[*] Website loads identically via IP:")
-    print(check_ip_loading(target))
+    print("🌐 Website loads identically via IP:")
+    print("   ", check_ip_loading(target), "\n")
+
+    print("📡 Nmap Fast Port Scan Results:")
+    print(run_nmap_ports(target), "\n")
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

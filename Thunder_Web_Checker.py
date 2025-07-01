@@ -1,465 +1,461 @@
 #!/usr/bin/env python3
-
-import subprocess
-import requests
+import argparse
+import json
+import os
+import re
 import socket
 import ssl
-import sys
-import re
-import json
-import argparse
-import urllib3
-import os
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
+
+import requests
 from bs4 import BeautifulSoup
 from colorama import Fore, Style, init
-from datetime import datetime
-import random
 from fpdf import FPDF
 
 init(autoreset=True)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BANNER = r"""
-··································································
-:    ____  _  _  _  _  _  _  ___  ___  ___     _    _  ___  ___  :
-:   (_  _)( )( )( )( )( \( )(   \(  _)(  ,)   ( \/\/ )(  _)(  ,) :
-:     )(   )__(  )()(  )  (  ) ) )) _) )  \    \    /  ) _) ) ,\ :
-:    (__) (_)(_) \__/ (_)\_)(___/(___)(_)\_)    \/\/  (___)(___/ :
-:   __  _  _  ___   __  _ _   ___  ___                           :
-:  / _)( )( )(  _) / _)( ) ) (  _)(  ,)                          :
-: ( (_  )__(  ) _)( (_  )  \  ) _) )  \                          :
-:  \__)(_)(_)(___) \__)(_)\_)(___)(_)\_)                         :
-··································································
+ .    _                        _                                  _     
+_/_   /      ,   . , __     ___/   ___  .___       ,  _  /   ___  \ ___ 
+ |    |,---. |   | |'  `.  /   | .'   ` /   \      |  |  | .'   ` |/   \
+ |    |'   ` |   | |    | ,'   | |----' |   '      `  ^  ' |----' |    `
+ \__/ /    | `._/| /    | `___,' `.___, /           \/ \/  `.___, `___,'
+                               `                                        
+       _                    \                                           
+  ___  /        ___    ___  |   ,   ___  .___                           
+.'   ` |,---. .'   ` .'   ` |  /  .'   ` /   \                          
+|      |'   ` |----' |      |-<   |----' |   '                          
+ `._.' /    | `.___,  `._.' /  \_ `.___, /                              
 """
 
-USER_AGENT = 'Mozilla/5.0 (WebSecurityScanner/1.0 ThunderWebChecker-AI)'
 DEFAULT_HEADERS = {
-    'User-Agent': USER_AGENT
-}
-
-RISK_LEVELS = {
-    "low": "🟢 Low",
-    "medium": "🟡 Medium",
-    "high": "🔴 High"
+    "User-Agent": "ThunderWebChecker /1.0 
 }
 
 report_json = []
-pdf = FPDF()
-pdf.add_page()
-pdf.set_font("Arial", size=12)
-pdf.cell(200, 10, txt="Thunder Web Checker AI Report", ln=True, align='C')
+report_lock = threading.Lock()
 
+def add_result(title, risk_level, summary):
+    with report_lock:
+        report_json.append({
+            "title": title,
+            "risk_level": risk_level,
+            "summary": summary
+        })
 
-def add_result(title, risk, summary):
-    entry = {
-        "title": title,
-        "risk_level": RISK_LEVELS[risk],
-        "summary": summary
-    }
-    report_json.append(entry)
-    pdf.cell(200, 10, txt=f"{title} - {RISK_LEVELS[risk]}", ln=True)
-    pdf.multi_cell(0, 10, summary)
-    print(Fore.CYAN + f"[AI Risk] {title} → {RISK_LEVELS[risk]}")
-    print(Fore.WHITE + f"         Summary: {summary}\n")
-
-
-def ai_insight(message):
-    tips = [
-        "Consider enabling HTTP security headers like X-XSS-Protection.",
-        "Check if outdated JS libraries like jQuery are used.",
-        "If no WAF is detected, consider deploying ModSecurity.",
-        "Look for exposed .git or .env files on directory scan.",
-        "Subdomain enumeration may reveal staging servers."
-    ]
-    insight = random.choice(tips)
-    print(Fore.MAGENTA + f"[AI Insight] {insight}")
-    return insight
-
-
-def ai_summary():
-    print(Fore.MAGENTA + "\n[AI Summary] Final Recommendations:")
-    tips = random.sample([
-        "Use Content-Security-Policy to mitigate XSS.",
-        "Use a vulnerability scanner like Nikto or OpenVAS for deep scanning.",
-        "Ensure login forms are protected with rate limiting and CAPTCHA.",
-        "If direct IP access works, set up host validation in the backend.",
-        "Store sensitive configs securely using environment variables."
-    ], 3)
-    for tip in tips:
-        print(Fore.MAGENTA + f"  • {tip}")
-        pdf.multi_cell(0, 10, f"[AI Final Tip] {tip}")
-
-
-def export_report():
-    with open("thunder_report.json", "w") as f:
-        json.dump(report_json, f, indent=2)
-    pdf.output("thunder_report.pdf")
-    print(Fore.YELLOW + "\n[✓] JSON report saved to thunder_report.json")
-    print(Fore.YELLOW + "[✓] PDF report saved to thunder_report.pdf")
-
-
-def get_hosting_details(ip):
+def run_command(cmd):
     try:
-        response = requests.get(f"http://ip-api.com/json/{ip}?fields=isp,org,country,regionName,city,as,query", timeout=8)
-        data = response.json()
-        return {
-            'isp': data.get('isp', 'Unknown'),
-            'org': data.get('org', 'Unknown'),
-            'location': f"{data.get('city')}, {data.get('regionName')}, {data.get('country')}",
-            'asn': data.get('as', 'Unknown'),
-            'cloud': any(cloud in data.get('org', '').lower() for cloud in ['amazon', 'google', 'azure', 'cloudflare'])
-        }
-    except Exception:
-        return {
-            'isp': 'Unknown', 'org': 'Unknown', 'location': 'Unknown', 'asn': 'Unknown', 'cloud': False
-        }
-
-
-def run_service_scan(host):
-    print(Fore.CYAN + "\n[+] Service and Version Detection (nmap)")
-    print(Fore.YELLOW + f"Running: nmap -sV --version-light {host}\n")
-    try:
-        result = subprocess.check_output(["nmap", "-sV", "--version-light", host], stderr=subprocess.DEVNULL).decode()
-        print(Fore.GREEN + result)
-        # Just output yes/no on outdated detection
-        outdated = re.findall(r"(\d+/tcp).*?open.*?([\w-]+)\s+(\d+[\.\d+]*)", result)
-        if outdated:
-            print(Fore.RED + "[!] Possible outdated services detected: YES")
-            add_result("Service Version Scan", "medium", "Possible outdated services detected. Review output above for details.")
-        else:
-            print(Fore.GREEN + "[+] No obviously outdated versions detected.")
-            add_result("Service Version Scan", "low", "No obviously outdated service versions detected.")
+        output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
+        return output
     except Exception as e:
-        print(Fore.RED + f"[-] Failed to scan services: {e}")
-        add_result("Service Version Scan", "high", f"Service scan failed: {e}")
+        return f"Error running {' '.join(cmd)}: {e}"
 
+def get_ip_and_hosting(domain):
+    print(Fore.CYAN + "[+] Resolving IP and Hosting Info")
+    try:
+        ip = socket.gethostbyname(domain)
+        print(Fore.GREEN + f"[✓] IP Address: {ip}")
+    except Exception as e:
+        print(Fore.RED + f"[-] Could not resolve IP: {e}")
+        ip = None
+
+    hosting_info = "Unknown"
+    if ip:
+        try:
+            res = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                hosting_info = data.get("org", "Unknown")
+                print(Fore.GREEN + f"[✓] Hosting Info: {hosting_info}")
+            else:
+                print(Fore.YELLOW + "[!] Could not fetch hosting info from ipinfo.io")
+        except Exception as e:
+            print(Fore.YELLOW + f"[!] Hosting info fetch error: {e}")
+    add_result("IP and Hosting Info", "low", f"IP: {ip}, Hosting: {hosting_info}")
+    return ip, hosting_info
+
+def run_nmap_scan(domain):
+    print(Fore.CYAN + "\n[+] Running Nmap Service and Version Scan")
+    output = run_command(["nmap", "-sV", "-T4", domain])
+    print(Fore.GREEN + output)
+    add_result("Nmap Scan", "medium", output)
 
 def run_whatweb_scan(target):
-    print(Fore.CYAN + "\n[+] Running WhatWeb Technology Detection")
-    try:
-        result = subprocess.check_output(["whatweb", "--no-color", "--log-json=-", target], stderr=subprocess.DEVNULL)
-        lines = result.decode().strip().split('\n')
-        if lines:
-            data = json.loads(lines[0])
-            plugins = data.get('plugins', [])
-            if plugins:
-                print(Fore.GREEN + f"[✓] Technologies detected ({len(plugins)}):")
-                techs = []
-                for plugin in plugins:
-                    name = plugin.get('name', 'unknown')
-                    version = plugin.get('version', '')
-                    ver_str = f" v{version}" if version else ""
-                    techs.append(f"{name}{ver_str}")
-                    print(f"  - {name}{ver_str}")
-                add_result("Technology Fingerprint", "low", f"Technologies detected: {', '.join(techs)}")
-            else:
-                print(Fore.YELLOW + "[!] No technologies detected by WhatWeb.")
-                add_result("Technology Fingerprint", "medium", "No technologies detected by WhatWeb.")
-        else:
-            print(Fore.YELLOW + "[!] WhatWeb returned no data.")
-            add_result("Technology Fingerprint", "medium", "WhatWeb returned no data.")
-    except FileNotFoundError:
-        print(Fore.RED + "[-] WhatWeb not installed or not found in PATH. Skipping WhatWeb scan.")
-        add_result("Technology Fingerprint", "medium", "WhatWeb not installed or not found.")
-    except Exception as e:
-        print(Fore.RED + f"[-] WhatWeb scan failed: {e}")
-        add_result("Technology Fingerprint", "high", f"WhatWeb scan failed: {e}")
+    print(Fore.CYAN + "\n[+] Running WhatWeb Scan")
+    output = run_command(["whatweb", target])
+    print(Fore.GREEN + output)
+    add_result("WhatWeb Scan", "medium", output)
 
+def run_wafw00f_scan(target):
+    print(Fore.CYAN + "\n[+] Running WAFW00F Scan")
+    output = run_command(["wafw00f", target])
+    print(Fore.GREEN + output)
+    add_result("WAF Detection", "medium", output)
 
-def run_wafw00f(target):
-    print(Fore.CYAN + "\n[+] Running WAF Detection (wafw00f)")
-    try:
-        result = subprocess.check_output(["wafw00f", "-a", target], stderr=subprocess.DEVNULL).decode()
-        waf_detected = "No WAF detected" not in result
-        if waf_detected:
-            print(Fore.GREEN + "[✓] WAF detected.")
-            add_result("WAF Detection", "medium", "WAF detected on the target.")
-        else:
-            print(Fore.YELLOW + "[✗] No WAF detected.")
-            add_result("WAF Detection", "low", "No WAF detected on the target.")
-    except FileNotFoundError:
-        print(Fore.RED + "[-] wafw00f not installed or not found in PATH. Skipping WAF detection.")
-        add_result("WAF Detection", "medium", "wafw00f not installed or not found.")
-    except Exception as e:
-        print(Fore.RED + f"[-] WAF detection failed: {e}")
-        add_result("WAF Detection", "high", f"WAF detection failed: {e}")
-
-
-def check_clickjacking_protection(target):
-    print(Fore.CYAN + "\n[+] Checking Clickjacking Protection (X-Frame-Options / CSP)")
+def check_http_security_headers(target):
+    print(Fore.CYAN + "\n[+] Checking HTTP Security Headers")
     try:
         response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
-        xfo = response.headers.get("X-Frame-Options", "")
-        csp = response.headers.get("Content-Security-Policy", "")
+        headers = response.headers
 
-        if "DENY" in xfo.upper() or "SAMEORIGIN" in xfo.upper():
-            print(Fore.GREEN + f"[✓] X-Frame-Options is set properly: {xfo}")
-            add_result("Clickjacking Protection", "low", f"X-Frame-Options header set: {xfo}")
-        elif "frame-ancestors" in csp.lower():
-            print(Fore.GREEN + f"[✓] Content-Security-Policy frame-ancestors directive found: {csp}")
-            add_result("Clickjacking Protection", "low", f"CSP frame-ancestors directive found.")
+        important_headers = {
+            "X-Frame-Options": ["DENY", "SAMEORIGIN"],
+            "Content-Security-Policy": None,
+            "X-Content-Type-Options": ["nosniff"],
+            "Referrer-Policy": ["no-referrer", "strict-origin-when-cross-origin", "same-origin"],
+            "Permissions-Policy": None,
+            "Expect-CT": None,
+        }
+
+        missing = []
+        misconfigured = []
+
+        for header, expected_values in important_headers.items():
+            value = headers.get(header)
+            if not value:
+                missing.append(header)
+            elif expected_values:
+                if not any(ev.lower() in value.lower() for ev in expected_values):
+                    misconfigured.append(f"{header} (value: {value})")
+
+        if missing or misconfigured:
+            msg = ""
+            if missing:
+                msg += f"Missing headers: {', '.join(missing)}. "
+            if misconfigured:
+                msg += f"Misconfigured headers: {', '.join(misconfigured)}."
+            print(Fore.YELLOW + "[!] " + msg)
+            add_result("HTTP Security Headers", "medium", msg)
         else:
-            print(Fore.RED + "[✗] Clickjacking protection NOT detected!")
-            print(Fore.YELLOW + "    ➤ Consider setting 'X-Frame-Options: DENY' or using 'frame-ancestors' in CSP.")
-            add_result("Clickjacking Protection", "high", "No Clickjacking protection detected.")
+            print(Fore.GREEN + "[✓] All important HTTP security headers are present and properly configured.")
+            add_result("HTTP Security Headers", "low", "All important HTTP security headers are present and properly configured.")
     except Exception as e:
-        print(Fore.RED + f"[-] Failed to check Clickjacking protection: {e}")
-        add_result("Clickjacking Protection", "high", f"Error checking clickjacking protection: {e}")
+        print(Fore.RED + f"[-] Failed to check HTTP security headers: {e}")
+        add_result("HTTP Security Headers", "high", f"Error checking HTTP security headers: {e}")
 
+def check_x_frame_options(target):
+    print(Fore.CYAN + "\n[+] Checking X-Frame-Options Header")
+    try:
+        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
+        xfo = response.headers.get("X-Frame-Options")
+        if xfo:
+            print(Fore.GREEN + f"[✓] X-Frame-Options: {xfo}")
+            add_result("X-Frame-Options", "low", f"X-Frame-Options header present: {xfo}")
+        else:
+            print(Fore.YELLOW + "[!] X-Frame-Options header missing - vulnerable to clickjacking")
+            add_result("X-Frame-Options", "high", "X-Frame-Options header missing - vulnerable to clickjacking")
+    except Exception as e:
+        print(Fore.RED + f"[-] Error checking X-Frame-Options: {e}")
+        add_result("X-Frame-Options", "high", f"Error checking X-Frame-Options: {e}")
 
 def check_hsts_header(target):
-    print(Fore.CYAN + "\n[+] Checking Strict-Transport-Security (HSTS) Header")
+    print(Fore.CYAN + "\n[+] Checking HSTS Header")
     try:
-        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10, allow_redirects=True)
-        hsts = response.headers.get("Strict-Transport-Security", "")
+        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
+        hsts = response.headers.get("Strict-Transport-Security")
         if hsts:
-            print(Fore.GREEN + f"[✓] Strict-Transport-Security is set: {hsts}")
+            print(Fore.GREEN + f"[✓] HSTS header present: {hsts}")
             add_result("HSTS Header", "low", f"HSTS header present: {hsts}")
         else:
-            print(Fore.RED + "[✗] HSTS header NOT found!")
-            print(Fore.YELLOW + "    ➤ Consider adding 'Strict-Transport-Security: max-age=31536000; includeSubDomains'")
-            add_result("HSTS Header", "high", "HSTS header not found.")
+            print(Fore.YELLOW + "[!] HSTS header missing - HTTPS downgrade attacks possible")
+            add_result("HSTS Header", "medium", "HSTS header missing - HTTPS downgrade attacks possible")
     except Exception as e:
-        print(Fore.RED + f"[-] Failed to check HSTS header: {e}")
+        print(Fore.RED + f"[-] Error checking HSTS header: {e}")
         add_result("HSTS Header", "high", f"Error checking HSTS header: {e}")
 
-
 def check_csrf_token(target):
-    print(Fore.CYAN + "\n[+] Checking for CSRF Token in Forms")
+    print(Fore.CYAN + "\n[+] Checking for CSRF Tokens in Forms")
     try:
-        res = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
-        soup = BeautifulSoup(res.text, "html.parser")
+        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
         forms = soup.find_all("form")
-
-        if not forms:
-            print(Fore.YELLOW + "[-] No forms found to check CSRF tokens.")
-            add_result("CSRF Token Detection", "medium", "No forms found on page to check CSRF tokens.")
-            return
-
-        found_token = False
+        token_found = False
         for form in forms:
             inputs = form.find_all("input")
-            for i in inputs:
-                name = i.get("name", "").lower()
+            for inp in inputs:
+                name = inp.get("name", "").lower()
                 if "csrf" in name or "token" in name:
-                    found_token = True
-                    print(Fore.GREEN + f"[✓] CSRF token field found in form: {i.get('name')}")
-                    action = form.get("action") or target
-                    method = form.get("method", "get").lower()
-                    url = urlparse(action).netloc and action or urlparse(target)._replace(path=action).geturl()
-                    payload = {i.get("name"): "test_token_value"}
-                    dummy_post = requests.post(url, data=payload, headers=DEFAULT_HEADERS, timeout=10)
-                    if dummy_post.status_code in [403, 400]:
-                        print(Fore.GREEN + "[✓] Server appears to validate CSRF token (test request blocked).")
-                        add_result("CSRF Token Validation", "low", "CSRF token found and appears to be validated.")
-                    else:
-                        print(Fore.RED + "[✗] CSRF token might not be validated (response not blocked).")
-                        add_result("CSRF Token Validation", "high", "CSRF token found but may not be validated properly.")
+                    token_found = True
                     break
-            if found_token:
+            if token_found:
                 break
-
-        if not found_token:
-            print(Fore.RED + "[✗] No CSRF token fields found in forms!")
-            print(Fore.YELLOW + "    ➤ Consider adding anti-CSRF tokens to all sensitive forms.")
-            add_result("CSRF Token Detection", "high", "No CSRF token fields found in forms.")
+        if token_found:
+            print(Fore.GREEN + "[✓] CSRF token found in at least one form")
+            add_result("CSRF Token", "low", "CSRF token found in at least one form")
+        else:
+            print(Fore.YELLOW + "[!] No CSRF tokens found in forms - potential CSRF vulnerability")
+            add_result("CSRF Token", "high", "No CSRF tokens found in forms - potential CSRF vulnerability")
     except Exception as e:
-        print(Fore.RED + f"[-] Failed to check CSRF token: {e}")
-        add_result("CSRF Token Detection", "high", f"Error checking CSRF token: {e}")
+        print(Fore.RED + f"[-] Error checking CSRF tokens: {e}")
+        add_result("CSRF Token", "high", f"Error checking CSRF tokens: {e}")
 
-
-def check_ip_direct_access(target):
-    print(Fore.CYAN + "\n[+] Checking Direct IP Access to Web Page")
+def check_ip_direct_access(target, ip):
+    print(Fore.CYAN + "\n[+] Checking if target web page loads from IP directly")
     try:
         parsed = urlparse(target)
-        domain = parsed.hostname
         scheme = parsed.scheme or "http"
-        ip = socket.gethostbyname(domain)
-
-        test_url = f"{scheme}://{ip}"
-        headers_ip = DEFAULT_HEADERS.copy()
-        headers_ip["Host"] = domain
-
-        response = requests.get(test_url, headers=headers_ip, timeout=10, verify=False, allow_redirects=False)
-
-        if response.status_code in [200, 301, 302]:
-            print(Fore.YELLOW + f"[!] Web page loads via IP: {test_url}")
-            print(Fore.YELLOW + "    ➤ Possible virtual host misconfiguration or Cloud bypass risk.")
-            add_result("Direct IP Access", "medium", "Web page loads via IP address, indicating possible misconfiguration.")
+        url_ip = f"{scheme}://{ip}"
+        response = requests.get(url_ip, headers=DEFAULT_HEADERS, timeout=10)
+        if response.status_code == 200:
+            print(Fore.YELLOW + f"[!] Target loads from IP address directly: {url_ip}")
+            add_result("IP Direct Access", "medium", f"Target loads from IP address directly: {url_ip}")
         else:
-            print(Fore.GREEN + f"[✓] Server blocked direct IP access (status {response.status_code}).")
-            add_result("Direct IP Access", "low", "Direct IP access to web page is blocked.")
-    except requests.exceptions.SSLError:
-        print(Fore.RED + "[✗] SSL Certificate mismatch on direct IP access (as expected).")
-        add_result("Direct IP Access", "low", "SSL certificate mismatch when accessing via IP (expected behavior).")
+            print(Fore.GREEN + "[✓] Target does not load from IP address directly")
+            add_result("IP Direct Access", "low", "Target does not load from IP address directly")
     except Exception as e:
-        print(Fore.GREEN + f"[✓] Direct IP access blocked or not responding: {e}")
-        add_result("Direct IP Access", "low", "Direct IP access blocked or not responding.")
+        print(Fore.RED + f"[-] Error checking IP direct access: {e}")
+        add_result("IP Direct Access", "medium", f"Error checking IP direct access: {e}")
 
+def check_ssl_tls(target):
+    print(Fore.CYAN + "\n[+] Checking SSL/TLS Configuration")
+    parsed = urlparse(target)
+    hostname = parsed.hostname
+    port = 443
 
-def run_nuclei_scan(target):
-    print(Fore.CYAN + "\n[+] Running Common Vulnerability Detection (Nuclei)")
+    context = ssl.create_default_context()
     try:
-        # nuclei scan command - can add templates path if available
-        result = subprocess.check_output(["nuclei", "-silent", "-json", "-u", target], stderr=subprocess.DEVNULL).decode()
-        if result.strip():
-            findings = []
-            for line in result.strip().split("\n"):
-                try:
-                    data = json.loads(line)
-                    findings.append(data.get('info', {}).get('name', 'Unknown vulnerability'))
-                except Exception:
-                    continue
-            if findings:
-                print(Fore.RED + f"[!] Vulnerabilities found: {len(findings)}")
-                for f in findings:
-                    print(Fore.RED + f"  - {f}")
-                add_result("Common Vulnerability Scan", "high", f"Detected vulnerabilities: {', '.join(findings)}")
-            else:
-                print(Fore.GREEN + "[+] No vulnerabilities found by Nuclei.")
-                add_result("Common Vulnerability Scan", "low", "No vulnerabilities found by Nuclei.")
+        with socket.create_connection((hostname, port), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                cert = ssock.getpeercert()
+                subject = dict(x[0] for x in cert.get('subject', []))
+                issuer = dict(x[0] for x in cert.get('issuer', []))
+                print(Fore.GREEN + f"[✓] SSL certificate subject: {subject.get('commonName', 'N/A')}")
+                print(Fore.GREEN + f"[✓] SSL certificate issuer: {issuer.get('commonName', 'N/A')}")
+                add_result("SSL/TLS Check", "low", f"SSL certificate subject: {subject.get('commonName', 'N/A')}, issuer: {issuer.get('commonName', 'N/A')}")
+    except Exception as e:
+        print(Fore.RED + f"[-] SSL/TLS check failed: {e}")
+        add_result("SSL/TLS Check", "high", f"SSL/TLS check failed: {e}")
+
+def run_subdomain_enum(domain):
+    print(Fore.CYAN + "\n[+] Running Subdomain Enumeration")
+    try:
+        output = run_command(["sublist3r", "-d", domain, "-o", "subdomains.txt"])
+        if "Error" in output:
+            raise Exception(output)
+        with open("subdomains.txt") as f:
+            subdomains = [line.strip() for line in f if line.strip()]
+        if subdomains:
+            print(Fore.GREEN + f"[✓] Found {len(subdomains)} subdomains:")
+            for sub in subdomains:
+                print(f"  - {sub}")
+            add_result("Subdomain Enumeration", "medium", f"Found subdomains: {', '.join(subdomains)}")
         else:
-            print(Fore.GREEN + "[+] No vulnerabilities found by Nuclei.")
-            add_result("Common Vulnerability Scan", "low", "No vulnerabilities found by Nuclei.")
+            print(Fore.YELLOW + "[!] No subdomains found.")
+            add_result("Subdomain Enumeration", "low", "No subdomains found.")
     except FileNotFoundError:
-        print(Fore.RED + "[-] Nuclei not installed or not found in PATH. Skipping vulnerability scan.")
-        add_result("Common Vulnerability Scan", "medium", "Nuclei not installed or not found.")
+        print(Fore.RED + "[-] Sublist3r not installed or not found. Skipping subdomain enumeration.")
+        add_result("Subdomain Enumeration", "medium", "Sublist3r not installed or not found.")
     except Exception as e:
-        print(Fore.RED + f"[-] Nuclei scan failed: {e}")
-        add_result("Common Vulnerability Scan", "high", f"Nuclei scan failed: {e}")
+        print(Fore.RED + f"[-] Subdomain enumeration failed: {e}")
+        add_result("Subdomain Enumeration", "high", f"Subdomain enumeration error: {e}")
 
+# --- Common Vulnerability Checks ---
 
-def run_hydra_login_bruteforce(target, login_url, usernames_file, passwords_file):
-    print(Fore.CYAN + "\n[+] Running Login Brute-force Check (Hydra)")
-    if not login_url or not usernames_file or not passwords_file:
-        print(Fore.YELLOW + "[!] Missing parameters for Hydra login brute-force (login_url, usernames, passwords). Skipping.")
-        add_result("Login Brute-force Check", "medium", "Login URL or wordlists not provided, skipped brute-force.")
-        return
-    if not os.path.isfile(usernames_file) or not os.path.isfile(passwords_file):
-        print(Fore.RED + "[!] Username or password wordlist file not found. Skipping Hydra brute-force.")
-        add_result("Login Brute-force Check", "high", "Username or password wordlist file missing, skipped brute-force.")
-        return
-
+def check_open_redirect(target):
+    print(Fore.CYAN + "\n[+] Checking for Open Redirect Vulnerabilities")
     try:
-        cmd = [
-            "hydra",
-            "-L", usernames_file,
-            "-P", passwords_file,
-            "-f",
-            "-s", "443" if target.startswith("https") else "80",
-            target.replace("https://", "").replace("http://", ""),
-            "http-post-form",
-            f"{login_url}:username=^USER^&password=^PASS^:F=incorrect"
-        ]
-        print(Fore.YELLOW + f"Running: {' '.join(cmd)}")
-        result = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
-        print(Fore.GREEN + result)
-        if "login:" in result.lower() or "success" in result.lower():
-            add_result("Login Brute-force Check", "high", "Possible login credentials found via brute-force.")
-        else:
-            add_result("Login Brute-force Check", "low", "No login credentials found via brute-force.")
+        redirect_params = ["url", "redirect", "next", "dest", "destination", "redir", "callback"]
+        test_url = "https://evil.com"
+        vulnerable = False
+
+        parsed = urlparse(target)
+        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+        for param in redirect_params:
+            test_target = f"{base_url}?{param}={test_url}"
+            response = requests.get(test_target, headers=DEFAULT_HEADERS, allow_redirects=False, timeout=10)
+            location = response.headers.get("Location", "")
+            if test_url in location:
+                print(Fore.YELLOW + f"[!] Potential open redirect via parameter '{param}'")
+                add_result("Open Redirect", "high", f"Open redirect detected via parameter '{param}'")
+                vulnerable = True
+                break
+
+        if not vulnerable:
+            print(Fore.GREEN + "[✓] No open redirect vulnerabilities detected")
+            add_result("Open Redirect", "low", "No open redirect vulnerabilities detected")
     except Exception as e:
-        print(Fore.RED + f"[-] Hydra brute-force failed: {e}")
-        add_result("Login Brute-force Check", "high", f"Hydra error: {e}")
+        print(Fore.RED + f"[-] Open redirect check failed: {e}")
+        add_result("Open Redirect", "medium", f"Open redirect check error: {e}")
 
-
-def run_directory_bruteforce(target, wordlist_file):
-    print(Fore.CYAN + "\n[+] Running Directory Bruteforce (Gobuster)")
-    if not wordlist_file or not os.path.isfile(wordlist_file):
-        print(Fore.RED + "[!] Directory wordlist file not found. Skipping directory bruteforce.")
-        add_result("Directory Bruteforce", "medium", "Directory wordlist file missing, skipped brute-force.")
-        return
-
+def check_basic_xss(target):
+    print(Fore.CYAN + "\n[+] Checking for Basic Reflected XSS Vulnerabilities")
     try:
-        cmd = [
-            "gobuster",
-            "dir",
-            "-u", target,
-            "-w", wordlist_file,
-            "-q"
-        ]
-        print(Fore.YELLOW + f"Running: {' '.join(cmd)}")
-        result = subprocess.check_output(cmd, stderr=subprocess.DEVNULL).decode()
-        found_dirs = re.findall(r"(\/[\w\/\-\.]+)", result)
-        if found_dirs:
-            print(Fore.GREEN + f"[✓] Found directories/files:")
-            for d in found_dirs:
-                print(Fore.GREEN + f"  - {d}")
-            add_result("Directory Bruteforce", "medium", f"Found directories/files: {', '.join(found_dirs)}")
-        else:
-            print(Fore.YELLOW + "[!] No directories/files found with Gobuster.")
-            add_result("Directory Bruteforce", "low", "No directories/files found during bruteforce.")
-    except FileNotFoundError:
-        print(Fore.RED + "[-] Gobuster not installed or not found in PATH. Skipping directory bruteforce.")
-        add_result("Directory Bruteforce", "medium", "Gobuster not installed or not found.")
+        xss_params = ["q", "search", "query", "text", "input", "keyword"]
+        xss_payload = "<script>alert(1)</script>"
+        vulnerable = False
+
+        parsed = urlparse(target)
+        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+        for param in xss_params:
+            test_target = f"{base_url}?{param}={xss_payload}"
+            response = requests.get(test_target, headers=DEFAULT_HEADERS, timeout=10)
+            if xss_payload in response.text:
+                print(Fore.YELLOW + f"[!] Potential reflected XSS via parameter '{param}'")
+                add_result("Reflected XSS", "high", f"Reflected XSS detected via parameter '{param}'")
+                vulnerable = True
+                break
+
+        if not vulnerable:
+            print(Fore.GREEN + "[✓] No basic reflected XSS vulnerabilities detected")
+            add_result("Reflected XSS", "low", "No basic reflected XSS vulnerabilities detected")
     except Exception as e:
-        print(Fore.RED + f"[-] Directory bruteforce failed: {e}")
-        add_result("Directory Bruteforce", "high", f"Directory bruteforce error: {e}")
+        print(Fore.RED + f"[-] XSS check failed: {e}")
+        add_result("Reflected XSS", "medium", f"XSS check error: {e}")
 
+def check_basic_sqli(target):
+    print(Fore.CYAN + "\n[+] Checking for Basic SQL Injection Vulnerabilities")
+    try:
+        sqli_params = ["id", "user", "item", "product", "page"]
+        sqli_payload = "' OR '1'='1"
+        vulnerable = False
 
-def scan_summary(domain, ip, hosting):
-    print(Fore.YELLOW + "\n] Scan Summary")
-    print(Fore.CYAN + f"🔍 Domain: {domain}")
-    print(Fore.CYAN + f"📡 Resolved IP: {ip}")
-    print(Fore.CYAN + f"🌍 Location: {hosting['location']}")
-    print(Fore.CYAN + f"☁ Hosted in Cloud: {'Yes (' + hosting['org'] + ')' if hosting['cloud'] else 'No'}")
-    print(Fore.CYAN + f"🏢 Hosting Org: {hosting['org']}")
-    print(Fore.CYAN + f"🛰️ ISP: {hosting['isp']}")
-    print(Fore.CYAN + f"🔗 ASN: {hosting['asn']}")
-    add_result("Scan Summary", "low", f"Domain: {domain}\nIP: {ip}\nLocation: {hosting['location']}\nHosted in Cloud: {'Yes' if hosting['cloud'] else 'No'}\nOrg: {hosting['org']}\nISP: {hosting['isp']}\nASN: {hosting['asn']}")
+        parsed = urlparse(target)
+        base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
+        for param in sqli_params:
+            test_target = f"{base_url}?{param}={sqli_payload}"
+            response = requests.get(test_target, headers=DEFAULT_HEADERS, timeout=10)
+            errors = [
+                "you have an error in your sql syntax",
+                "warning: mysql",
+                "unclosed quotation mark after the character string",
+                "quoted string not properly terminated",
+                "sql syntax error",
+                "mysql_fetch_array()",
+                "syntax error",
+            ]
+            content = response.text.lower()
+            if any(err in content for err in errors):
+                print(Fore.YELLOW + f"[!] Potential SQL Injection via parameter '{param}'")
+                add_result("SQL Injection", "high", f"SQL Injection detected via parameter '{param}'")
+                vulnerable = True
+                break
+
+        if not vulnerable:
+            print(Fore.GREEN + "[✓] No basic SQL Injection vulnerabilities detected")
+            add_result("SQL Injection", "low", "No basic SQL Injection vulnerabilities detected")
+    except Exception as e:
+        print(Fore.RED + f"[-] SQL Injection check failed: {e}")
+        add_result("SQL Injection", "medium", f"SQL Injection check error: {e}")
+
+def check_directory_listing(target):
+    print(Fore.CYAN + "\n[+] Checking for Directory Listing Enabled")
+    try:
+        parsed = urlparse(target)
+        base_url = f"{parsed.scheme}://{parsed.netloc}/"
+        response = requests.get(base_url, headers=DEFAULT_HEADERS, timeout=10)
+        if response.status_code == 200 and re.search(r"Index of /", response.text, re.IGNORECASE):
+            print(Fore.YELLOW + "[!] Directory listing appears to be enabled on root directory")
+            add_result("Directory Listing", "medium", "Directory listing enabled on root directory")
+        else:
+            print(Fore.GREEN + "[✓] Directory listing not detected on root directory")
+            add_result("Directory Listing", "low", "Directory listing not detected on root directory")
+    except Exception as e:
+        print(Fore.RED + f"[-] Directory listing check failed: {e}")
+        add_result("Directory Listing", "medium", f"Directory listing check error: {e}")
+
+def check_subdomain_takeover(domain):
+    print(Fore.CYAN + "\n[+] Checking for Potential Subdomain Takeover")
+    try:
+        subdomains_file = "subdomains.txt"
+        if not os.path.exists(subdomains_file):
+            print(Fore.YELLOW + "[!] Subdomains file not found, skipping subdomain takeover check")
+            add_result("Subdomain Takeover", "medium", "Subdomains file not found, skipping check")
+            return
+
+        # Placeholder: full DNS CNAME analysis not implemented here
+        print(Fore.YELLOW + "[!] Subdomain takeover check requires DNS CNAME analysis - not fully implemented")
+        add_result("Subdomain Takeover", "medium", "Subdomain takeover check requires DNS CNAME analysis - not fully implemented")
+    except Exception as e:
+        print(Fore.RED + f"[-] Subdomain takeover check failed: {e}")
+        add_result("Subdomain Takeover", "medium", f"Subdomain takeover check error: {e}")
+
+def aidef ai_analysis():
+    print(Fore.CYAN + "\n[+] Running AI-based Analysis (Placeholder)")
+    # This is a placeholder for AI analysis integration.
+    # You can integrate with an AI model or API here to analyze collected data.
+    add_result("AI Analysis", "low", "AI analysis placeholder - no issues detected")
+
+def generate_report_json(filename="thunder_web_checker_report.json"):
+    print(Fore.CYAN + f"\n[+] Generating JSON report: {filename}")
+    try:
+        with open(filename, "w") as f:
+            json.dump(report_json, f, indent=4)
+        print(Fore.GREEN + f"[✓] JSON report saved to {filename}")
+    except Exception as e:
+        print(Fore.RED + f"[-] Failed to save JSON report: {e}")
+
+def generate_report_pdf(filename="thunder_web_checker_report.pdf"):
+    print(Fore.CYAN + f"\n[+] Generating PDF report: {filename}")
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Arial", "B", 16)
+        pdf.cell(0, 10, "Thunder Web Checker Report", ln=True, align="C")
+        pdf.ln(10)
+
+        pdf.set_font("Arial", "B", 12)
+        for item in report_json:
+            pdf.cell(0, 10, f"Title: {item['title']}", ln=True)
+            pdf.set_font("Arial", "", 11)
+            pdf.multi_cell(0, 8, f"Risk Level: {item['risk_level'].capitalize()}")
+            pdf.multi_cell(0, 8, f"Summary: {item['summary']}")
+            pdf.ln(5)
+            pdf.set_font("Arial", "B", 12)
+
+        pdf.output(filename)
+        print(Fore.GREEN + f"[✓] PDF report saved to {filename}")
+    except Exception as e:
+        print(Fore.RED + f"[-] Failed to save PDF report: {e}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Thunder Web Checker - Web Security Recon Tool with AI")
-    parser.add_argument("target", help="Target URL (e.g., https://example.com)")
-    parser.add_argument("--hydra-login-url", help="Login URL for Hydra brute-force (e.g., /login.php)")
-    parser.add_argument("--hydra-usernames", help="Username wordlist file path for Hydra")
-    parser.add_argument("--hydra-passwords", help="Password wordlist file path for Hydra")
-    parser.add_argument("--dir-wordlist", help="Wordlist file path for directory bruteforce")
-    parser.add_argument("--json-only", action="store_true", help="Output only JSON report")
-    parser.add_argument("--pdf-only", action="store_true", help="Output only PDF report")
+    print(BANNER)
+
+    parser = argparse.ArgumentParser(description="Thunder Web Checker AI - Comprehensive Web Security Scanner")
+    parser.add_argument("target", help="Target URL or domain to scan (e.g. https://example.com)")
     args = parser.parse_args()
 
     target = args.target
-    print(BANNER)
+    if not target.startswith("http"):
+        target = "http://" + target
 
-    try:
-        parsed_url = urlparse(target)
-        if not parsed_url.scheme:
-            target = "http://" + target
-            parsed_url = urlparse(target)
+    parsed = urlparse(target)
+    domain = parsed.netloc or parsed.path
 
-        domain = parsed_url.hostname
-        ip = socket.gethostbyname(domain)
+    ip, hosting = get_ip_and_hosting(domain)
 
-        hosting_info = get_hosting_details(ip)
-        scan_summary(domain, ip, hosting_info)
-        run_service_scan(domain)
-        run_whatweb_scan(target)
-        run_wafw00f(target)
-        check_clickjacking_protection(target)
-        check_hsts_header(target)
-        check_csrf_token(target)
-        check_ip_direct_access(target)
-        run_nuclei_scan(target)
-        run_hydra_login_bruteforce(target, args.hydra_login_url, args.hydra_usernames, args.hydra_passwords)
-        run_directory_bruteforce(target, args.dir_wordlist)
-        ai_summary()
+    # Run scans and checks
+    run_nmap_scan(domain)
+    run_whatweb_scan(target)
+    run_wafw00f_scan(target)
+    check_http_security_headers(target)
+    check_x_frame_options(target)
+    check_hsts_header(target)
+    check_csrf_token(target)
+    if ip:
+        check_ip_direct_access(target, ip)
+    check_ssl_tls(target)
+    run_subdomain_enum(domain)
 
-        if args.json_only:
-            with open("thunder_report.json", "w") as f:
-                json.dump(report_json, f, indent=2)
-            print(Fore.YELLOW + "\n[✓] JSON report saved to thunder_report.json")
-        elif args.pdf_only:
-            pdf.output("thunder_report.pdf")
-            print(Fore.YELLOW + "\n[✓] PDF report saved to thunder_report.pdf")
-        else:
-            export_report()
+    # Common vulnerability checks
+    check_open_redirect(target)
+    check_basic_xss(target)
+    check_basic_sqli(target)
+    check_directory_listing(target)
+    check_subdomain_takeover(domain)
 
-    except Exception as e:
-        print(Fore.RED + f"[-] Error: {e}")
+    # AI analysis placeholder
+    ai_analysis()
 
+    # Generate reports
+    generate_report_json()
+    generate_report_pdf()
 
 if __name__ == "__main__":
     main()

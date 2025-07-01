@@ -375,11 +375,12 @@ def check_subdomain_takeover(domain):
         print(Fore.RED + f"[-] Subdomain takeover check failed: {e}")
         add_result("Subdomain Takeover", "medium", f"Subdomain takeover check error: {e}")
 
-def aidef ai_analysis():
+def ai_analysis():
     print(Fore.CYAN + "\n[+] Running AI-based Analysis (Placeholder)")
     # This is a placeholder for AI analysis integration.
     # You can integrate with an AI model or API here to analyze collected data.
     add_result("AI Analysis", "low", "AI analysis placeholder - no issues detected")
+
 
 def generate_report_json(filename="thunder_web_checker_report.json"):
     print(Fore.CYAN + f"\n[+] Generating JSON report: {filename}")

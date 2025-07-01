@@ -32,7 +32,7 @@ _/_   /      ,   . , __     ___/   ___  .___       ,  _  /   ___  \ ___
 """
 
 DEFAULT_HEADERS = {
-    "User-Agent": "ThunderWebChecker /1.0 
+    "User-Agent": "ThunderWebCheckerAI/1.0 (+https://github.com/yourrepo)"
 }
 
 report_json = []

@@ -1,4 +1,4 @@
-# Thunder Web Checker - Enhanced Version
+#!/usr/bin/env python3
 
 import subprocess
 import requests
@@ -6,27 +6,167 @@ import socket
 import ssl
 import sys
 import re
+import json
+import argparse
+import urllib3
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from colorama import Fore, Style, init
 
 init(autoreset=True)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+BANNER = r"""
+··································································
+:    ____  _  _  _  _  _  _  ___  ___  ___     _    _  ___  ___  :
+:   (_  _)( )( )( )( )( \( )(   \(  _)(  ,)   ( \/\/ )(  _)(  ,) :
+:     )(   )__(  )()(  )  (  ) ) )) _) )  \    \    /  ) _) ) ,\ :
+:    (__) (_)(_) \__/ (_)\_)(___/(___)(_)\_)    \/\/  (___)(___/ :
+:   __  _  _  ___   __  _ _   ___  ___                           :
+:  / _)( )( )(  _) / _)( ) ) (  _)(  ,)                          :
+: ( (_  )__(  ) _)( (_  )  \  ) _) )  \                          :
+:  \__)(_)(_)(___) \__)(_)\_)(___)(_)\_)                         :
+··································································
+"""
+
+USER_AGENT = 'Mozilla/5.0 (WebSecurityScanner/1.0 ThunderWebChecker)'
 DEFAULT_HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (ThunderWebChecker/2.0)'
+    'User-Agent': USER_AGENT
 }
+
+def get_hosting_details(ip):
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}?fields=isp,org,country,regionName,city,as,query", timeout=8)
+        data = response.json()
+        return {
+            'isp': data.get('isp', 'Unknown'),
+            'org': data.get('org', 'Unknown'),
+            'location': f"{data.get('city')}, {data.get('regionName')}, {data.get('country')}",
+            'asn': data.get('as', 'Unknown'),
+            'cloud': any(cloud in data.get('org', '').lower() for cloud in ['amazon', 'google', 'azure', 'cloudflare'])
+        }
+    except Exception:
+        return {
+            'isp': 'Unknown', 'org': 'Unknown', 'location': 'Unknown', 'asn': 'Unknown', 'cloud': False
+        }
 
 def run_service_scan(host):
     print(Fore.CYAN + "\n[+] Service and Version Detection (nmap)")
     print(Fore.YELLOW + f"Running: nmap -sV --version-light {host}\n")
     try:
         result = subprocess.check_output(["nmap", "-sV", "--version-light", host], stderr=subprocess.DEVNULL).decode()
-        if "open" in result:
-            print(Fore.GREEN + "[✓] Services detected and responding.")
+        print(Fore.GREEN + result)
+        outdated = re.findall(r"(\d+/tcp).*?open.*?([\w-]+)\s+(\d+[\.\d+]*)", result)
+        if outdated:
+            print(Fore.RED + "[!] Possible outdated services detected:")
+            for port, service, version in outdated:
+                print(Fore.RED + f"    {port} → {service} {version}")
         else:
-            print(Fore.RED + "[✗] No services responded on common ports.")
+            print(Fore.GREEN + "[+] No obviously outdated versions detected.")
     except Exception as e:
         print(Fore.RED + f"[-] Failed to scan services: {e}")
+
+def run_whatweb_scan(target):
+    print(Fore.CYAN + "\n[+] Running WhatWeb Technology Detection")
+    try:
+        result = subprocess.check_output(["whatweb", "--no-color", "--log-json=-", target], stderr=subprocess.DEVNULL)
+        lines = result.decode().strip().split('\n')
+        if lines:
+            data = json.loads(lines[0])
+            plugins = data.get('plugins', [])
+            if plugins:
+                print(Fore.GREEN + f"[✓] Technologies detected ({len(plugins)}):")
+                for plugin in plugins:
+                    name = plugin.get('name', 'unknown')
+                    version = plugin.get('version', '')
+                    ver_str = f" v{version}" if version else ""
+                    print(f"  - {name}{ver_str}")
+            else:
+                print(Fore.YELLOW + "[!] No technologies detected by WhatWeb.")
+        else:
+            print(Fore.YELLOW + "[!] WhatWeb returned no data.")
+    except FileNotFoundError:
+        print(Fore.RED + "[-] WhatWeb not installed or not found in PATH. Skipping WhatWeb scan.")
+    except Exception as e:
+        print(Fore.RED + f"[-] WhatWeb scan failed: {e}")
+
+def scan_summary(domain, ip, hosting):
+    print(Fore.YELLOW + "\n] Scan Summary")
+    print(Fore.CYAN + f"🔍 Domain: {domain}")
+    print(Fore.CYAN + f"📡 Resolved IP: {ip}")
+    print(Fore.CYAN + f"🌍 Location: {hosting['location']}")
+    print(Fore.CYAN + f"☁ Hosted in Cloud: {'Yes (' + hosting['org'] + ')' if hosting['cloud'] else 'No'}")
+    print(Fore.CYAN + f"🏢 Hosting Org: {hosting['org']}")
+    print(Fore.CYAN + f"🛰️ ISP: {hosting['isp']}")
+    print(Fore.CYAN + f"🔗 ASN: {hosting['asn']}")
+
+def check_clickjacking_protection(target):
+    print(Fore.CYAN + "\n[+] Checking Clickjacking Protection (X-Frame-Options / CSP)")
+    try:
+        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
+        xfo = response.headers.get("X-Frame-Options", "")
+        csp = response.headers.get("Content-Security-Policy", "")
+
+        if "DENY" in xfo.upper() or "SAMEORIGIN" in xfo.upper():
+            print(Fore.GREEN + f"[✓] X-Frame-Options is set properly: {xfo}")
+        elif "frame-ancestors" in csp.lower():
+            print(Fore.GREEN + f"[✓] Content-Security-Policy frame-ancestors directive found: {csp}")
+        else:
+            print(Fore.RED + "[✗] Clickjacking protection NOT detected!")
+            print(Fore.YELLOW + "    ➤ Consider setting 'X-Frame-Options: DENY' or using 'frame-ancestors' in CSP.")
+    except Exception as e:
+        print(Fore.RED + f"[-] Failed to check Clickjacking protection: {e}")
+
+def check_hsts_header(target):
+    print(Fore.CYAN + "\n[+] Checking Strict-Transport-Security (HSTS) Header")
+    try:
+        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10, allow_redirects=True)
+        hsts = response.headers.get("Strict-Transport-Security", "")
+        if hsts:
+            print(Fore.GREEN + f"[✓] Strict-Transport-Security is set: {hsts}")
+        else:
+            print(Fore.RED + "[✗] HSTS header NOT found!")
+            print(Fore.YELLOW + "    ➤ Consider adding 'Strict-Transport-Security: max-age=31536000; includeSubDomains'")
+    except Exception as e:
+        print(Fore.RED + f"[-] Failed to check HSTS header: {e}")
+
+def check_csrf_token(target):
+    print(Fore.CYAN + "\n[+] Checking for CSRF Token in Forms")
+    try:
+        res = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
+        forms = soup.find_all("form")
+
+        if not forms:
+            print(Fore.YELLOW + "[-] No forms found to check CSRF tokens.")
+            return
+
+        found_token = False
+        for form in forms:
+            inputs = form.find_all("input")
+            for i in inputs:
+                name = i.get("name", "").lower()
+                if "csrf" in name or "token" in name:
+                    found_token = True
+                    print(Fore.GREEN + f"[✓] CSRF token field found in form: {i.get('name')}")
+                    action = form.get("action") or target
+                    method = form.get("method", "get").lower()
+                    url = urlparse(action).netloc and action or urlparse(target)._replace(path=action).geturl()
+                    payload = {i.get("name"): "test_token_value"}
+                    dummy_post = requests.post(url, data=payload, headers=DEFAULT_HEADERS, timeout=10)
+                    if dummy_post.status_code in [403, 400]:
+                        print(Fore.GREEN + "[✓] Server appears to validate CSRF token (test request blocked).")
+                    else:
+                        print(Fore.RED + "[✗] CSRF token might not be validated (response not blocked).")
+                    break
+            if found_token:
+                break
+
+        if not found_token:
+            print(Fore.RED + "[✗] No CSRF token fields found in forms!")
+            print(Fore.YELLOW + "    ➤ Consider adding anti-CSRF tokens to all sensitive forms.")
+    except Exception as e:
+        print(Fore.RED + f"[-] Failed to check CSRF token: {e}")
 
 def check_ip_direct_access(target):
     print(Fore.CYAN + "\n[+] Checking Direct IP Access to Web Page")
@@ -43,94 +183,43 @@ def check_ip_direct_access(target):
         response = requests.get(test_url, headers=headers_ip, timeout=10, verify=False, allow_redirects=False)
 
         if response.status_code in [200, 301, 302]:
-            print(Fore.YELLOW + "[!] Direct IP access to website is possible: YES")
+            print(Fore.YELLOW + f"[!] Web page loads via IP: {test_url}")
+            print(Fore.YELLOW + "    ➤ Possible virtual host misconfiguration or Cloud bypass risk.")
         else:
-            print(Fore.GREEN + "[✓] Direct IP access blocked: NO")
-
+            print(Fore.GREEN + f"[✓] Server blocked direct IP access (status {response.status_code}).")
     except requests.exceptions.SSLError:
-        print(Fore.GREEN + "[✓] Direct IP access blocked due to SSL mismatch: NO")
-    except Exception:
-        print(Fore.GREEN + "[✓] Direct IP access blocked or unreachable: NO")
+        print(Fore.RED + "[✗] SSL Certificate mismatch on direct IP access (as expected).")
+    except Exception as e:
+        print(Fore.GREEN + f"[✓] Direct IP access blocked or not responding: {e}")
 
-def detect_waf(target):
-    print(Fore.CYAN + "\n[+] Checking for WAF Protection")
+def main():
+    parser = argparse.ArgumentParser(description="Thunder Web Checker - Web Security Recon Tool")
+    parser.add_argument("target", help="Target URL (e.g., https://example.com)")
+    args = parser.parse_args()
+
+    target = args.target
+    print(BANNER)
+
     try:
-        response = requests.get(target, headers=DEFAULT_HEADERS, timeout=10)
-        waf_headers = ['server', 'x-waf-detection', 'x-sucuri-id', 'x-firewall-protection']
-        waf_detected = any(header in response.headers for header in waf_headers)
+        parsed_url = urlparse(target)
+        if not parsed_url.scheme:
+            target = "http://" + target
+            parsed_url = urlparse(target)
 
-        if waf_detected or any("waf" in v.lower() for v in response.headers.values()):
-            print(Fore.YELLOW + "[!] WAF detected: YES")
-        else:
-            print(Fore.GREEN + "[✓] WAF not detected: NO")
+        domain = parsed_url.hostname
+        ip = socket.gethostbyname(domain)
+
+        hosting_info = get_hosting_details(ip)
+        scan_summary(domain, ip, hosting_info)
+        run_service_scan(domain)
+        run_whatweb_scan(target)
+        check_clickjacking_protection(target)
+        check_hsts_header(target)
+        check_csrf_token(target)
+        check_ip_direct_access(target)
 
     except Exception as e:
-        print(Fore.RED + f"[-] Failed to check for WAF: {e}")
+        print(Fore.RED + f"[-] Error: {e}")
 
-def check_common_vulnerabilities(target):
-    print(Fore.CYAN + "\n[+] Scanning for Common Vulnerabilities (CVE matching - Nmap NSE)")
-    try:
-        parsed = urlparse(target)
-        host = parsed.hostname
-        result = subprocess.check_output(["nmap", "--script", "vuln", host], stderr=subprocess.DEVNULL).decode()
-        if "VULNERABLE" in result:
-            print(Fore.RED + "[!] One or more potential vulnerabilities found.")
-        else:
-            print(Fore.GREEN + "[✓] No known vulnerabilities detected by scripts.")
-    except Exception as e:
-        print(Fore.RED + f"[-] Failed to run vulnerability scan: {e}")
-
-def detect_directory_listing(target):
-    print(Fore.CYAN + "\n[+] Checking for Directory Listing Enabled")
-    try:
-        test_path = target.rstrip('/') + "/.git/"
-        res = requests.get(test_path, headers=DEFAULT_HEADERS, timeout=10, verify=False)
-        if "Index of" in res.text and res.status_code == 200:
-            print(Fore.YELLOW + "[!] Directory listing might be enabled: YES")
-        else:
-            print(Fore.GREEN + "[✓] Directory listing appears disabled: NO")
-    except Exception as e:
-        print(Fore.RED + f"[-] Error checking directory listing: {e}")
-
-def detect_exposed_env(target):
-    print(Fore.CYAN + "\n[+] Checking for Exposed .env File")
-    try:
-        env_url = target.rstrip('/') + "/.env"
-        res = requests.get(env_url, headers=DEFAULT_HEADERS, timeout=10, verify=False)
-        if "APP_KEY" in res.text or "DB_PASSWORD" in res.text:
-            print(Fore.RED + "[!] .env file exposed and contains sensitive keys!")
-        else:
-            print(Fore.GREEN + "[✓] No exposed .env file found.")
-    except Exception as e:
-        print(Fore.RED + f"[-] Error checking .env exposure: {e}")
-
-def detect_outdated_js(target):
-    print(Fore.CYAN + "\n[+] Checking for Outdated JavaScript Libraries")
-    try:
-        res = requests.get(target, headers=DEFAULT_HEADERS, timeout=10, verify=False)
-        soup = BeautifulSoup(res.text, "html.parser")
-        scripts = soup.find_all("script", src=True)
-        known_libraries = {
-            "fancybox": {"pattern": r"fancybox.*?([\d.]+)", "latest": "3.5.7", "name": "fancyBox"},
-            # Extend with more libraries as needed
-        }
-        found = False
-        for script in scripts:
-            src = script["src"]
-            for lib, meta in known_libraries.items():
-                if lib in src.lower():
-                    version_match = re.search(meta["pattern"], src)
-                    if version_match:
-                        current_version = version_match.group(1)
-                        if current_version != meta["latest"]:
-                            print(Fore.YELLOW + f"[!] Outdated JavaScript Detected: {meta['name']} {current_version}")
-                            print(Fore.YELLOW + f"    → {src}")
-                            print(Fore.YELLOW + f"    → Latest: {meta['latest']}")
-                            found = True
-        if not found:
-            print(Fore.GREEN + "[✓] No outdated JavaScript libraries detected.")
-
-    except Exception as e:
-        print(Fore.RED + f"[-] Error checking JavaScript libraries: {e}")
-
-# END OF COMBINED THUNDER WEB CHECKER MODULE
+if __name__ == "__main__":
+    main()

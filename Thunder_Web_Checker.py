@@ -56,7 +56,6 @@ def run_service_scan(host):
     try:
         result = subprocess.check_output(["nmap", "-sV", "--version-light", host], stderr=subprocess.DEVNULL).decode()
         print(Fore.GREEN + result)
-        # Basic outdated version detection: (improve this with CVE mapping if needed)
         outdated = re.findall(r"(\d+/tcp).*?open.*?([\w-]+)\s+(\d+[\.\d+]*)", result)
         if outdated:
             print(Fore.RED + "[!] Possible outdated services detected:")
@@ -66,6 +65,30 @@ def run_service_scan(host):
             print(Fore.GREEN + "[+] No obviously outdated versions detected.")
     except Exception as e:
         print(Fore.RED + f"[-] Failed to scan services: {e}")
+
+def run_whatweb_scan(target):
+    print(Fore.CYAN + "\n[+] Running WhatWeb Technology Detection")
+    try:
+        result = subprocess.check_output(["whatweb", "--no-color", "--log-json=-", target], stderr=subprocess.DEVNULL)
+        lines = result.decode().strip().split('\n')
+        if lines:
+            data = json.loads(lines[0])
+            plugins = data.get('plugins', [])
+            if plugins:
+                print(Fore.GREEN + f"[✓] Technologies detected ({len(plugins)}):")
+                for plugin in plugins:
+                    name = plugin.get('name', 'unknown')
+                    version = plugin.get('version', '')
+                    ver_str = f" v{version}" if version else ""
+                    print(f"  - {name}{ver_str}")
+            else:
+                print(Fore.YELLOW + "[!] No technologies detected by WhatWeb.")
+        else:
+            print(Fore.YELLOW + "[!] WhatWeb returned no data.")
+    except FileNotFoundError:
+        print(Fore.RED + "[-] WhatWeb not installed or not found in PATH. Skipping WhatWeb scan.")
+    except Exception as e:
+        print(Fore.RED + f"[-] WhatWeb scan failed: {e}")
 
 def scan_summary(domain, ip, hosting):
     print(Fore.YELLOW + "\n] Scan Summary")
@@ -189,6 +212,7 @@ def main():
         hosting_info = get_hosting_details(ip)
         scan_summary(domain, ip, hosting_info)
         run_service_scan(domain)
+        run_whatweb_scan(target)
         check_clickjacking_protection(target)
         check_hsts_header(target)
         check_csrf_token(target)

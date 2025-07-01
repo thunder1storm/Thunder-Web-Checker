@@ -1,3 +1,21 @@
+# Thunder Web Checker - Enhanced Version
+
+import subprocess
+import requests
+import socket
+import ssl
+import sys
+import re
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+from colorama import Fore, Style, init
+
+init(autoreset=True)
+
+DEFAULT_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (ThunderWebChecker/2.0)'
+}
+
 def run_service_scan(host):
     print(Fore.CYAN + "\n[+] Service and Version Detection (nmap)")
     print(Fore.YELLOW + f"Running: nmap -sV --version-light {host}\n")
@@ -9,7 +27,6 @@ def run_service_scan(host):
             print(Fore.RED + "[✗] No services responded on common ports.")
     except Exception as e:
         print(Fore.RED + f"[-] Failed to scan services: {e}")
-
 
 def check_ip_direct_access(target):
     print(Fore.CYAN + "\n[+] Checking Direct IP Access to Web Page")
@@ -35,7 +52,6 @@ def check_ip_direct_access(target):
     except Exception:
         print(Fore.GREEN + "[✓] Direct IP access blocked or unreachable: NO")
 
-
 def detect_waf(target):
     print(Fore.CYAN + "\n[+] Checking for WAF Protection")
     try:
@@ -51,7 +67,6 @@ def detect_waf(target):
     except Exception as e:
         print(Fore.RED + f"[-] Failed to check for WAF: {e}")
 
-
 def check_common_vulnerabilities(target):
     print(Fore.CYAN + "\n[+] Scanning for Common Vulnerabilities (CVE matching - Nmap NSE)")
     try:
@@ -65,7 +80,6 @@ def check_common_vulnerabilities(target):
     except Exception as e:
         print(Fore.RED + f"[-] Failed to run vulnerability scan: {e}")
 
-
 def detect_directory_listing(target):
     print(Fore.CYAN + "\n[+] Checking for Directory Listing Enabled")
     try:
@@ -77,7 +91,6 @@ def detect_directory_listing(target):
             print(Fore.GREEN + "[✓] Directory listing appears disabled: NO")
     except Exception as e:
         print(Fore.RED + f"[-] Error checking directory listing: {e}")
-
 
 def detect_exposed_env(target):
     print(Fore.CYAN + "\n[+] Checking for Exposed .env File")
@@ -91,7 +104,6 @@ def detect_exposed_env(target):
     except Exception as e:
         print(Fore.RED + f"[-] Error checking .env exposure: {e}")
 
-
 def detect_outdated_js(target):
     print(Fore.CYAN + "\n[+] Checking for Outdated JavaScript Libraries")
     try:
@@ -100,9 +112,8 @@ def detect_outdated_js(target):
         scripts = soup.find_all("script", src=True)
         known_libraries = {
             "fancybox": {"pattern": r"fancybox.*?([\d.]+)", "latest": "3.5.7", "name": "fancyBox"},
-            # Add more libraries here as needed
+            # Extend with more libraries as needed
         }
-
         found = False
         for script in scripts:
             src = script["src"]
@@ -121,3 +132,5 @@ def detect_outdated_js(target):
 
     except Exception as e:
         print(Fore.RED + f"[-] Error checking JavaScript libraries: {e}")
+
+# END OF COMBINED THUNDER WEB CHECKER MODULE
